@@ -131,18 +131,33 @@ if view=="FIRE Engine":
 if view=="AI Insights":
     st.subheader("🤖 AI Insights (Free HuggingFace)")
 
-    q=st.text_area("Ask something:")
+    q = st.text_area("Ask something:")
+
     if q:
-        API_URL="https://api-inference.huggingface.co/models/google/gemma-2b-it"
-        payload={"inputs":f"DATA:
-{df.to_string()}
+        API_URL = "https://api-inference.huggingface.co/models/google/gemma-2b-it"
+        headers = {"Content-Type": "application/json"}
+
+        prompt = f"""
+You are a financial analyst AI.
+
+DATA:
+{df.to_string(index=False)}
 
 QUESTION:
-{q}"}
-        r=requests.post(API_URL,headers={"Content-Type":"application/json"},data=json.dumps(payload))
-        try:
-            ans=r.json()[0]["generated_text"]
-        except:
-            ans="AI busy. Try again."
-        st.write("### Insight:")
+{q}
+
+Give a short and clear explanation based only on the data.
+"""
+
+        payload = {"inputs": prompt}
+
+        with st.spinner("Analyzing with free AI..."):
+            r = requests.post(API_URL, headers=headers, data=json.dumps(payload))
+
+            try:
+                ans = r.json()[0]["generated_text"]
+            except:
+                ans = "AI model is busy, try again."
+
+        st.write("### 🔮 Insight:")
         st.write(ans)
