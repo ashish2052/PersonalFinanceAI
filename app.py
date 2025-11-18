@@ -10,8 +10,13 @@ import matplotlib.pyplot as plt
 from prophet import Prophet
 from sklearn.ensemble import IsolationForest
 import requests, json
-from streamlit_autorefresh import st_autorefresh
 
+# Safe import for auto-refresh
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ModuleNotFoundError:
+    def st_autorefresh(*args, **kwargs):
+        return None
 # --------------------------------------
 # PAGE CONFIG + GLOBAL NEON THEME
 # --------------------------------------
