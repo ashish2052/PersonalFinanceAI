@@ -6,4 +6,4 @@ numpy
 scikit-learn
 prophet
 openai
-
+streamlit-autorefresh
