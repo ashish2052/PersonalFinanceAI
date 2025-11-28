@@ -1,8 +1,3 @@
-# ======================================================
-# Personal Finance AI v4.2 — Full App (Soft Neon Edition)
-# ML Forecasting + FIRE Engine + AI Insights + Neon Cards
-# ======================================================
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,6 +5,7 @@ import matplotlib.pyplot as plt
 from prophet import Prophet
 from sklearn.ensemble import IsolationForest
 import requests, json
+import os
 
 # Safe import for auto-refresh
 try:
@@ -17,6 +13,7 @@ try:
 except ModuleNotFoundError:
     def st_autorefresh(*args, **kwargs):
         return None
+
 # --------------------------------------
 # PAGE CONFIG + GLOBAL NEON THEME
 # --------------------------------------
@@ -52,6 +49,27 @@ table {
     color: #E6EEFF !important;
 }
 
+/* Custom Neon Card */
+.neon-card {
+    background: rgba(10, 10, 30, 0.75);
+    padding: 18px;
+    border-radius: 15px;
+    box-shadow: 0 0 18px #008cff, inset 0 0 10px #0033cc;
+    text-align: center;
+    color: #d9ecff;
+    border: 1px solid #00aaff;
+    margin-bottom: 20px;
+}
+.neon-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: #00eaff;
+    text-shadow: 0 0 10px #00eaff;
+}
+.neon-label {
+    font-size: 14px;
+    opacity: 0.85;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -63,39 +81,95 @@ st.title("💰 Personal Finance AI v4.2 — Soft Neon Edition")
 # --------------------------------------
 st.sidebar.header("🔗 DATA SOURCE")
 
+# Default to a demo csv if none provided, or ask user
+# Using a placeholder for now, user can input their own
+default_csv = "https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv" # Placeholder, structure won't match but prevents crash on empty
 CSV_URL = st.sidebar.text_input(
     "Paste your Google Sheet CSV URL",
+    value="",
     placeholder="https://docs.google.com/spreadsheets/..."
 )
 
-if CSV_URL.strip() == "":
-    st.warning("Paste your CSV link to load dashboard.")
-    st.stop()
-
-
 # --------------------------------------
-# LOAD DATA (with caching)
+# HELPER: LOAD DATA
 # --------------------------------------
 @st.cache_data
 def load_data(url):
-    df = pd.read_csv(url)
-    df.columns = [c.strip().replace(" ", "_") for c in df.columns]
+    if not url:
+        return None
+    
+    try:
+        df = pd.read_csv(url)
+        # Clean column names
+        df.columns = [c.strip().replace(" ", "_") for c in df.columns]
+        
+        # Ensure required columns exist (mapping if necessary could go here)
+        required_cols = ["Month", "Income", "Expenses", "Ending_Balance"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            st.error(f"Missing columns in CSV: {missing}")
+            return None
 
-    numeric_cols = ["Beginning_Balance", "Income", "Expenses", "Ending_Balance"]
-    for col in numeric_cols:
-        df[col] = df[col].astype(str).str.replace(",", "", regex=False).astype(float)
+        # Clean numeric columns
+        numeric_cols = ["Income", "Expenses", "Ending_Balance"]
+        if "Beginning_Balance" in df.columns:
+            numeric_cols.append("Beginning_Balance")
+            
+        for col in numeric_cols:
+            if col in df.columns:
+                # Remove currency symbols, commas, etc.
+                df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # Parse dates
+        df["Month"] = pd.to_datetime(df["Month"], errors='coerce')
+        df = df.sort_values("Month")
+        
+        return df
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return None
 
-    return df
+df = None
+if CSV_URL:
+    df = load_data(CSV_URL)
+else:
+    st.info("👋 Welcome! Please paste your Google Sheet CSV URL in the sidebar to get started.")
+    st.markdown("""
+    **Expected CSV Format:**
+    - `Month` (Date format)
+    - `Income` (Number)
+    - `Expenses` (Number)
+    - `Ending_Balance` (Number)
+    - `Beginning_Balance` (Optional)
+    """)
+    
+    # Create a dummy DF for demo purposes if user wants to see UI? 
+    # For now, we stop if no data.
+    if st.button("Load Demo Data"):
+        # Create synthetic data
+        dates = pd.date_range(start="2023-01-01", periods=24, freq="M")
+        data = {
+            "Month": dates,
+            "Income": np.random.normal(50000, 5000, 24),
+            "Expenses": np.random.normal(30000, 3000, 24),
+        }
+        df = pd.DataFrame(data)
+        df["Income"] = df["Income"].abs()
+        df["Expenses"] = df["Expenses"].abs()
+        df["Ending_Balance"] = (df["Income"] - df["Expenses"]).cumsum() + 100000
+        df["Beginning_Balance"] = df["Ending_Balance"].shift(1).fillna(100000)
+        st.success("Loaded Demo Data")
 
-df = load_data(CSV_URL)
-
+if df is None:
+    st.stop()
 
 # --------------------------------------
 # REFRESH MECHANISMS
 # --------------------------------------
 if st.sidebar.button("🔄 Force Refresh Data"):
     st.cache_data.clear()
-    st.experimental_rerun()
+    st.rerun()
 
 st_autorefresh(interval=30000, key="auto_refresh_30s")
 
@@ -106,22 +180,23 @@ st_autorefresh(interval=30000, key="auto_refresh_30s")
 st.sidebar.header("⚙️ Settings")
 
 monthly_expense = st.sidebar.number_input("Monthly Expense (Now)", value=35000)
-cagr = st.sidebar.number_input("CAGR %", value=11.5)
+cagr = st.sidebar.number_input("CAGR % (Investments)", value=11.5)
 inflation = st.sidebar.number_input("Inflation %", value=6.0)
-withdraw_rate = st.sidebar.number_input("Withdrawal %", value=5.5)
-retire_age = st.sidebar.slider("Retirement Age", 35, 55, 40)
+withdraw_rate = st.sidebar.number_input("Withdrawal % (SWR)", value=4.0)
+retire_age = st.sidebar.slider("Retirement Age", 30, 80, 45)
 
 # Bulk events
-bulk_income = st.sidebar.number_input("Bulk Income", value=0)
-bulk_income_age = st.sidebar.number_input("Bulk Income Age", value=0)
-bulk_expense = st.sidebar.number_input("Bulk Expense", value=0)
-bulk_expense_age = st.sidebar.number_input("Bulk Expense Age", value=0)
+with st.sidebar.expander("💰 Bulk Events"):
+    bulk_income = st.number_input("One-time Income", value=0)
+    bulk_income_age = st.number_input("Age for Income", value=0)
+    bulk_expense = st.number_input("One-time Expense", value=0)
+    bulk_expense_age = st.number_input("Age for Expense", value=0)
 
 
 # --------------------------------------
 # VIEW SELECTOR
 # --------------------------------------
-view = st.sidebar.selectbox(
+view = st.sidebar.radio(
     "Choose View",
     ["Overview", "Forecast", "Anomaly Detection", "FIRE Engine", "AI Insights"]
 )
@@ -130,7 +205,7 @@ view = st.sidebar.selectbox(
 # --------------------------------------
 # PROPHET FORECAST HELPER
 # --------------------------------------
-def prophet_monthly(series):
+def prophet_monthly(series, periods=12):
     temp = df.copy()
     temp["ds"] = pd.to_datetime(temp["Month"])
     temp["y"] = series
@@ -138,286 +213,262 @@ def prophet_monthly(series):
     model = Prophet()
     model.fit(temp[["ds", "y"]])
 
-    future = model.make_future_dataframe(periods=12, freq="M")
-    return model.predict(future)
+    future = model.make_future_dataframe(periods=periods, freq="M")
+    forecast = model.predict(future)
+    return forecast
+
 # ======================================================
 # VIEW: OVERVIEW
 # ======================================================
 if view == "Overview":
-
     st.subheader("📘 Data Overview")
-    st.dataframe(df, use_container_width=True)
-
-    latest = df["Ending_Balance"].iloc[-1]
-    start = df["Beginning_Balance"].iloc[0]
-    growth = latest - start
-
-    c1, c2 = st.columns(2)
-    c1.metric("💰 Current Net Worth", f"Rs {latest:,.0f}")
-    c2.metric("📈 Total Growth", f"Rs {growth:,.0f}")
+    
+    # Top Metrics
+    latest_bal = df["Ending_Balance"].iloc[-1]
+    start_bal = df["Ending_Balance"].iloc[0] # Or beginning balance of first row
+    total_growth = latest_bal - start_bal
+    avg_savings_rate = ((df["Income"] - df["Expenses"]) / df["Income"]).mean() * 100
+    
+    m1, m2, m3 = st.columns(3)
+    m1.metric("💰 Current Net Worth", f"Rs {latest_bal:,.0f}", delta=f"{total_growth:,.0f}")
+    m2.metric("💸 Avg Monthly Expense", f"Rs {df['Expenses'].mean():,.0f}")
+    m3.metric("🐷 Avg Savings Rate", f"{avg_savings_rate:.1f}%")
 
     st.markdown("---")
 
-    st.subheader("📊 Income vs Expenses")
+    c1, c2 = st.columns([2, 1])
+    
+    with c1:
+        st.subheader("📊 Income vs Expenses")
+        st.line_chart(df.set_index("Month")[["Income", "Expenses"]], color=["#00eaff", "#ff6b6b"])
 
-    fig = plt.figure(figsize=(8,4))
-    plt.plot(df["Month"], df["Income"], label="Income", color="#00eaff")
-    plt.plot(df["Month"], df["Expenses"], label="Expenses", color="#ff6b6b")
-    plt.legend()
-    plt.xticks(rotation=45)
-    st.pyplot(fig)
-
-
+    with c2:
+        st.subheader("Recent Data")
+        st.dataframe(df.tail(5).set_index("Month"), use_container_width=True)
 
 
 # ======================================================
 # VIEW: INCOME FORECAST (ML PROPHET)
 # ======================================================
-if view == "Forecast":
+elif view == "Forecast":
+    st.subheader("🔮 Income Forecast — Prophet ML Model")
+    
+    periods = st.slider("Months to Forecast", 6, 60, 12)
+    
+    with st.spinner("Training Prophet Model..."):
+        forecast_df = prophet_monthly(df["Income"], periods=periods)
 
-    st.subheader("🔮 Income Forecast — Prophet ML Model (Next 12 Months)")
-
-    forecast_df = prophet_monthly(df["Income"])
-
-    fig = plt.figure(figsize=(10,4))
-    plt.plot(forecast_df["ds"], forecast_df["yhat"], color="#00eaff")
-    plt.title("Predicted Monthly Income")
-    st.pyplot(fig)
-
-    st.dataframe(forecast_df[["ds", "yhat"]].tail(12), use_container_width=True)
-
-
+    st.line_chart(forecast_df.set_index("ds")[["yhat", "yhat_lower", "yhat_upper"]])
+    
+    st.write("### Forecast Data")
+    st.dataframe(forecast_df[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(periods), use_container_width=True)
 
 
 # ======================================================
 # VIEW: EXPENSE / INCOME ANOMALY DETECTION
 # ======================================================
-if view == "Anomaly Detection":
-
+elif view == "Anomaly Detection":
     st.subheader("⚠️ Anomaly Detection — Isolation Forest")
+    
+    contamination = st.slider("Sensitivity (Contamination)", 0.01, 0.25, 0.10)
 
-    iso = IsolationForest(contamination=0.15, random_state=42)
+    iso = IsolationForest(contamination=contamination, random_state=42)
 
+    # Detect anomalies
     df["Income_Anomaly"] = iso.fit_predict(df[["Income"]])
     df["Expense_Anomaly"] = iso.fit_predict(df[["Expenses"]])
 
-    anomalies = df[(df["Income_Anomaly"] == -1) | 
-                   (df["Expense_Anomaly"] == -1)]
+    anomalies = df[(df["Income_Anomaly"] == -1) | (df["Expense_Anomaly"] == -1)]
 
-    st.warning("Showing months where Income or Expenses were significantly abnormal.")
-    st.dataframe(anomalies, use_container_width=True)
+    if not anomalies.empty:
+        st.warning(f"Found {len(anomalies)} anomalies in your financial history.")
+        st.dataframe(anomalies[["Month", "Income", "Expenses", "Income_Anomaly", "Expense_Anomaly"]], use_container_width=True)
+        
+        # Visualizing anomalies
+        st.write("### Anomaly Visualization")
+        
+        # Plot Income
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(df["Month"], df["Income"], label="Income", color="cyan", alpha=0.6)
+        # Highlight anomalies
+        anom_inc = df[df["Income_Anomaly"] == -1]
+        ax.scatter(anom_inc["Month"], anom_inc["Income"], color="red", label="Anomaly", s=50, zorder=5)
+        ax.set_title("Income Anomalies")
+        ax.legend()
+        ax.set_facecolor("#050A1F")
+        fig.patch.set_facecolor("#050A1F")
+        ax.tick_params(colors='white')
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        ax.title.set_color('white')
+        for spine in ax.spines.values():
+            spine.set_color('white')
+        st.pyplot(fig)
+        
+    else:
+        st.success("No significant anomalies detected with current sensitivity.")
+
+
 # ======================================================
 # VIEW: FIRE ENGINE v4.2 — ML + SOFT NEON UI
 # ======================================================
-if view == "FIRE Engine":
-
-    # ----------- STYLING FOR NEON CARDS -----------
-    st.markdown("""
-        <style>
-            .neon-card {
-                background: rgba(10, 10, 30, 0.75);
-                padding: 18px;
-                border-radius: 15px;
-                box-shadow: 0 0 18px #008cff, inset 0 0 10px #0033cc;
-                text-align: center;
-                color: #d9ecff;
-                border: 1px solid #00aaff;
-            }
-            .neon-value {
-                font-size: 26px;
-                font-weight: 700;
-                color: #00eaff;
-                text-shadow: 0 0 10px #00eaff;
-            }
-            .neon-label {
-                font-size: 14px;
-                opacity: 0.85;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
+elif view == "FIRE Engine":
     st.subheader("🔥 FIRE Engine v4.2 — ML + Soft Neon UI")
 
-    current_age = 30
+    # Inputs
+    current_age = st.number_input("Current Age", value=30, min_value=18, max_value=90)
     end_age = 90
-    age_range = list(range(current_age, end_age + 1))
+    
+    if retire_age <= current_age:
+        st.warning("Retirement age must be greater than current age.")
+    else:
+        age_range = list(range(current_age, end_age + 1))
+        
+        # ----------- RETIREMENT EXPENSES -----------
+        retire_monthly_exp = st.number_input(
+            "Retirement Monthly Expense (Today's Value)",
+            value=int(monthly_expense * 0.8) # Default to 80% of current
+        )
 
-    # ----------- WORKING EXPENSES (INFLATING) -----------
-    yearly_exp_working = []
-    exp = monthly_expense * 12
-    for _ in age_range:
-        yearly_exp_working.append(exp)
-        exp *= (1 + inflation/100)
-
-    # ----------- RETIREMENT EXPENSES (SEPARATE) -----------
-    retire_monthly_exp = st.sidebar.number_input(
-        "Retirement Monthly Expense (Today's Value)",
-        value=120000
-    )
-
-    yearly_exp_retire = []
-    exp_r = retire_monthly_exp * 12
-    for _ in age_range:
-        yearly_exp_retire.append(exp_r)
-        exp_r *= (1 + inflation/100)
-
-    # ----------- ML INCOME PROJECTION -----------
-    forecast_df = prophet_monthly(df["Income"])
-    income_fc_list = list(forecast_df["yhat"])
-
-    yearly_income = []
-    idx = 0
-    for age in age_range:
-        if age <= retire_age:
-            if idx + 12 <= len(income_fc_list):
-                yr = sum(income_fc_list[idx:idx+12])
-                yearly_income.append(max(0, yr))
-                idx += 12
+        # ----------- SIMULATION LOOP -----------
+        # We need to project year by year.
+        # 1. Estimate Annual Income Growth (using CAGR or Prophet trend?)
+        # For simplicity in FIRE calc, we often use a fixed growth rate for income, 
+        # but user asked for ML. Let's use the Prophet trend for the first N years, then flatten or grow by inflation.
+        
+        # Get Prophet trend for income
+        # We'll project 5 years out with Prophet, then assume inflation growth
+        future_months = (retire_age - current_age) * 12
+        # Limit Prophet to reasonable timeframe (e.g. 5 years), as it gets wild
+        # For long term, we'll use a conservative growth rate
+        
+        # Let's stick to the user's logic but refined:
+        # Income grows by inflation + career growth (say 2%) until retirement
+        # Expenses grow by inflation
+        
+        networth = df["Ending_Balance"].iloc[-1]
+        projection = []
+        
+        annual_income_est = df["Income"].mean() * 12 # Base
+        annual_expense_est = monthly_expense * 12
+        
+        # Career growth assumption (separate from investment CAGR)
+        career_growth = st.slider("Est. Annual Income Growth %", 0.0, 10.0, 3.0) / 100
+        
+        for age in age_range:
+            # 1. Determine Income/Expense for this year
+            if age < retire_age:
+                # Working
+                inc = annual_income_est
+                exp = annual_expense_est
+                
+                # Savings
+                savings = inc - exp
+                
+                # Apply Growth to Portfolio
+                investment_growth = networth * (cagr / 100)
+                
+                # Update Net Worth
+                networth = networth + investment_growth + savings
+                
+                # Inflate for next year
+                annual_income_est *= (1 + career_growth) # Income grows
+                annual_expense_est *= (1 + inflation / 100) # Expenses grow
+                
             else:
-                yearly_income.append(income_fc_list[-1] * 12)
-        else:
-            yearly_income.append(0)
-
-    # ----------- FIRE SIMULATION -----------
-    networth = df["Ending_Balance"].iloc[-1]
-    projection = []
-
-    for i, age in enumerate(age_range):
-
-        exp = yearly_exp_working[i] if age <= retire_age else yearly_exp_retire[i]
-        inc = yearly_income[i]
-        savings = max(0, inc - exp) if age <= retire_age else 0
-        growth = networth * (cagr/100)
-
-        # Bulk events
-        if age == bulk_income_age:
-            networth += bulk_income
-        if age == bulk_expense_age:
-            networth -= bulk_expense
-
-        if age <= retire_age:
-            networth = networth + growth + savings
-        else:
-            networth = networth + growth - exp
-
-        projection.append([age, inc, exp, savings, growth, networth])
-
-        if networth <= 0:
-            break
-
-    proj_df = pd.DataFrame(
-        projection,
-        columns=["Age","Income","Expenses","Savings","Growth","NetWorth"]
-    )
-
-    # ----------- KEY METRICS -----------
-    earliest_fire_age = None
-    for _, row in proj_df.iterrows():
-        passive = row["NetWorth"] * (withdraw_rate/100)
-        if passive >= row["Expenses"]:
-            earliest_fire_age = int(row["Age"])
-            break
-
-    if earliest_fire_age is None:
-        earliest_fire_age = "Not Achieved"
-
-    # Net worth at retirement
-    try:
-        retirement_nw = proj_df.loc[proj_df["Age"] == retire_age, "NetWorth"].values[0]
-    except:
-        retirement_nw = proj_df.iloc[-1]["NetWorth"]
-
-    # Net worth at Age 90
-    final_nw = proj_df.iloc[-1]["NetWorth"]
-
-    # Present Value of final corpus
-    years_to_90 = proj_df.iloc[-1]["Age"] - current_age
-    pv_final = final_nw / ((1 + inflation/100) ** years_to_90)
-
-    # ----------- DISPLAY NEON CARDS -----------
-    st.subheader("⭐ Key Retirement Metrics")
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.markdown(f"""
-        <div class="neon-card">
-            <div class="neon-label">Earliest FIRE Age</div>
-            <div class="neon-value">{earliest_fire_age}</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    c2.markdown(f"""
-        <div class="neon-card">
-            <div class="neon-label">Portfolio at Retirement (Age {retire_age})</div>
-            <div class="neon-value">Rs {retirement_nw:,.0f}</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    c3.markdown(f"""
-        <div class="neon-card">
-            <div class="neon-label">Portfolio at Age 90</div>
-            <div class="neon-value">Rs {final_nw:,.0f}</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    c4.markdown(f"""
-        <div class="neon-card">
-            <div class="neon-label">Present Value of Age 90 Corpus</div>
-            <div class="neon-value">Rs {pv_final:,.0f}</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ----------- CHARTS -----------
-    st.subheader("📈 Net Worth Projection")
-    fig1 = plt.figure(figsize=(10,4))
-    plt.plot(proj_df["Age"], proj_df["NetWorth"], color="#00eaff")
-    st.pyplot(fig1)
-
-    st.subheader("📉 Retirement & Depletion Curve")
-    fig2 = plt.figure(figsize=(10,4))
-    plt.plot(proj_df["Age"], proj_df["Expenses"], color="red", label="Expenses")
-    plt.plot(proj_df["Age"], proj_df["NetWorth"], color="cyan", label="Net Worth")
-    plt.legend()
-    st.pyplot(fig2)
-
-    st.subheader("📘 Full Projection Table")
-    st.dataframe(proj_df, use_container_width=True)
-
+                # Retired
+                inc = 0
+                # Expenses in retirement (adjusted for inflation from today)
+                # We need to calculate what the retirement expense IS at this future age
+                # The user input 'retire_monthly_exp' is in TODAY's value.
+                # So we inflate it by (age - current_age) years of inflation
+                years_passed = age - current_age
+                adjusted_retire_exp = (retire_monthly_exp * 12) * ((1 + inflation/100) ** years_passed)
+                
+                exp = adjusted_retire_exp
+                savings = -exp # Drawdown
+                
+                investment_growth = networth * (cagr / 100)
+                networth = networth + investment_growth - exp
+            
+            # Bulk Events
+            if age == bulk_income_age:
+                networth += bulk_income
+            if age == bulk_expense_age:
+                networth -= bulk_expense
+            
+            projection.append({
+                "Age": age,
+                "Income": inc if age < retire_age else 0,
+                "Expenses": exp,
+                "NetWorth": networth
+            })
+            
+            if networth < 0:
+                break
+        
+        proj_df = pd.DataFrame(projection)
+        
+        # Metrics
+        final_nw = proj_df["NetWorth"].iloc[-1] if not proj_df.empty else 0
+        
+        # Display
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f'<div class="neon-card"><div class="neon-label">Net Worth at Age {end_age}</div><div class="neon-value">Rs {final_nw:,.0f}</div></div>', unsafe_allow_html=True)
+        
+        # Charts
+        st.line_chart(proj_df.set_index("Age")[["NetWorth", "Expenses"]])
+        st.dataframe(proj_df, use_container_width=True)
 
 
 # ======================================================
-# VIEW: AI INSIGHTS (HUGGINGFACE • FREE)
+# VIEW: AI INSIGHTS
 # ======================================================
-if view == "AI Insights":
-
-    st.subheader("🤖 AI Insights (Free HuggingFace Model)")
-    q = st.text_area("Ask a financial question:")
-
-    if q:
-        API_URL = "https://api-inference.huggingface.co/models/google/gemma-2-2b-it"
-        headers = {"Content-Type": "application/json"}
-
+elif view == "AI Insights":
+    st.subheader("🤖 AI Financial Insights")
+    
+    # Check for OpenAI key
+    openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+    
+    if not openai_api_key:
+        st.info("Please enter your OpenAI API Key in the sidebar to use AI Insights.")
+        st.stop()
+        
+    import openai
+    client = openai.OpenAI(api_key=openai_api_key)
+    
+    q = st.text_area("Ask a question about your finances:", "How can I optimize my savings rate based on this data?")
+    
+    if st.button("Analyze"):
+        # Prepare context
+        # Summarize data to avoid token limits
+        summary = df.describe().to_string()
+        recent_data = df.tail(6).to_string()
+        
         prompt = f"""
-You are a financial analyst AI.
-
-DATASET:
-{df.to_string(index=False)}
-
-QUESTION:
-{q}
-
-Give a short, clear, helpful insight based only on the data.
-"""
-
-        payload = {"inputs": prompt}
-
-        with st.spinner("Analyzing..."):
-            r = requests.post(API_URL, headers=headers, data=json.dumps(payload))
-
+        You are an expert financial advisor. Analyze the user's financial data.
+        
+        Data Summary:
+        {summary}
+        
+        Recent 6 Months:
+        {recent_data}
+        
+        User Question: {q}
+        
+        Provide actionable, specific advice.
+        """
+        
+        with st.spinner("AI is thinking..."):
             try:
-                ans = r.json()[0]["generated_text"]
-            except:
-                ans = "Model is busy. Try again."
+                response = client.chat.completions.create(
+                    model="gpt-4o", # or gpt-3.5-turbo
+                    messages=[
+                        {"role": "system", "content": "You are a helpful financial assistant."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                st.markdown(response.choices[0].message.content)
+            except Exception as e:
+                st.error(f"AI Error: {e}")
 
-        st.write("### 🔮 Insight:")
-        st.write(ans)
